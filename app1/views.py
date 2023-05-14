@@ -1,6 +1,9 @@
 import datetime
 import json
 import os
+from django.conf import settings
+from django.forms import ValidationError
+import environ
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import render, redirect
 from django.views.decorators.csrf import csrf_exempt
@@ -8,10 +11,25 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.discovery import build
+from google_auth_oauthlib.flow import Flow
+from allauth.socialaccount.models import SocialToken
+from django.contrib.auth.decorators import login_required
+from django.contrib.auth import logout
+import requests
+
+environ.Env.read_env()
+env = environ.Env()
 
 def  homepage(request):
     if request.user.is_authenticated:
-        return  render(request=request, template_name= 'home.html',)
+        access_token = SocialToken.objects.get(
+            account__user=request.user,
+            account__provider='google',
+            token=request.user.social_auth.get(provider='google-oauth2').extra_data['access_token']
+        )
+        credentials = Credentials.from_authorized_user_info(access_token=access_token)
+        request.session['google_auth'] = credentials.to_authorized_user_info()
+        return render(request=request, template_name='home.html',)
     else: 
         return redirect('account_login')
 
@@ -26,12 +44,16 @@ def create_event(request):
     if request.method == 'POST':
         attendee_email = request.POST.get('attendee_email')
         attendee_name = request.POST.get('attendee_name')
-        start_time = datetime.datetime.strptime(request.POST.get('start_time'), '%Y-%m-%d %H:%M:%S')
-        end_time = datetime.datetime.strptime(request.POST.get('end_time'), '%Y-%m-%d %H:%M:%S')
-        
-        # Create Google Calendar event
-        credentials = Credentials.from_authorized_user_info(request.session['google_auth'])
-        service = build('calendar', 'v3', credentials=credentials)
+        start_time = datetime.datetime.strptime(request.POST.get('start_time'), '%Y-%m-%dT%H:%M')
+        end_time = datetime.datetime.strptime(request.POST.get('end_time'), '%Y-%m-%dT%H:%M')
+
+        google_auth = request.session.get('google_auth')
+        api_key = env('GOOGLE_API_KEY')
+
+        if google_auth and api_key:            
+            credentials = Credentials.from_authorized_user_info(google_auth)
+            service = build('calendar', 'v3', credentials=credentials, developerKey=api_key)
+
         event = {
             'summary': 'Meeting with {}'.format(attendee_name),
             'location': 'Virtual',
